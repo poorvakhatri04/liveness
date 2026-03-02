@@ -35,7 +35,7 @@ class LivenessService:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self._get_landmarker().detect(mp_image)
-
+    
         data = {
             "face_detected": False,
             "landmarks": None,
@@ -43,50 +43,101 @@ class LivenessService:
             "blink": False,
             "smile": False,
             "pose": "center",
-            "ear": 0
+            "ear": 0,
+            "z_variance": 0,
+            "depth_ratio": 0,
+            "curvature_score": 0,
+            "depth_spoof_flag": False
         }
-
+    
         if result.face_landmarks:
             landmarks = result.face_landmarks[0]
             data["face_detected"] = True
             data["landmarks"] = landmarks
-
-            # Distance check
+    
+            # ----------------------------
+            # Z VARIANCE CHECK
+            # ----------------------------
+            z_values = np.array([lm.z for lm in landmarks])
+            z_variance = np.var(z_values)
+            data["z_variance"] = float(z_variance)
+    
+            # ----------------------------
+            # NOSE-CHEEK DEPTH RATIO
+            # ----------------------------
+            nose_z = landmarks[1].z
+            left_cheek_z = landmarks[234].z
+            right_cheek_z = landmarks[454].z
+            cheek_avg = (left_cheek_z + right_cheek_z) / 2
+    
+            depth_ratio = abs(nose_z - cheek_avg)
+            data["depth_ratio"] = float(depth_ratio)
+    
+            # ----------------------------
+            # CURVATURE SCORE
+            # ----------------------------
+            forehead_z = landmarks[10].z
+            chin_z = landmarks[152].z
+    
+            curvature_score = (
+                abs(forehead_z - nose_z) +
+                abs(nose_z - chin_z)
+            )
+            data["curvature_score"] = float(curvature_score)
+    
+            # ----------------------------
+            # DEPTH SPOOF DECISION
+            # (Thresholds need tuning)
+            # ----------------------------
+            if (
+                z_variance < 0.000005 or
+                depth_ratio < 0.005 or
+                curvature_score < 0.01
+            ):
+                data["depth_spoof_flag"] = True
+    
+            # ----------------------------
+            # Distance check (unchanged)
+            # ----------------------------
             xs = [lm.x for lm in landmarks]
             face_width = max(xs) - min(xs)
-
+    
             if face_width < self.MIN_FACE_RATIO:
                 data["distance_status"] = "too_far"
             elif face_width > self.MAX_FACE_RATIO:
                 data["distance_status"] = "too_close"
             else:
                 data["distance_status"] = "good"
-
+    
+            # ----------------------------
             # Blink (EAR)
+            # ----------------------------
             def ear(eye):
                 p2, p6 = landmarks[eye[1]], landmarks[eye[5]]
                 p3, p5 = landmarks[eye[2]], landmarks[eye[4]]
                 p1, p4 = landmarks[eye[0]], landmarks[eye[3]]
-
+    
                 v1 = np.linalg.norm([p2.x - p6.x, p2.y - p6.y])
                 v2 = np.linalg.norm([p3.x - p5.x, p3.y - p5.y])
                 h = np.linalg.norm([p1.x - p4.x, p1.y - p4.y])
                 return (v1 + v2) / (2 * h)
-
+    
             data["ear"] = ear(self.LEFT_EYE)
             if data["ear"] < 0.23:
                 data["blink"] = True
-
+    
+            # ----------------------------
             # Head pose
+            # ----------------------------
             nose = landmarks[1]
             if nose.x < 0.40:
                 data["pose"] = "left"
             elif nose.x > 0.60:
                 data["pose"] = "right"
-            else:
-                data["pose"] = "center"
-
+    
+            # ----------------------------
             # Smile
+            # ----------------------------
             if result.face_blendshapes:
                 blend = result.face_blendshapes[0]
                 sl = sr = 0
@@ -97,7 +148,7 @@ class LivenessService:
                         sr = b.score
                 if (sl + sr) / 2 > 0.4:
                     data["smile"] = True
-
+    
         return data
 
 
@@ -134,6 +185,9 @@ def is_aligned(landmarks):
 
 def run_secure_liveness():
     service = LivenessService()
+    z_variances = []
+    depth_ratios = []
+    curvatures = []
     challenges = ["blink", "smile", "turn_left", "turn_right"]
     random.shuffle(challenges)
 
@@ -157,7 +211,10 @@ def run_secure_liveness():
 
         small = cv2.resize(frame, (480, 360))
         data = service.analyze(small)
-
+        if data["face_detected"]:
+            z_variances.append(data["z_variance"])
+            depth_ratios.append(data["depth_ratio"])
+            curvatures.append(data["curvature_score"])
         frame = draw_face_guide(
             frame,
             service.MIN_FACE_RATIO,
@@ -167,7 +224,14 @@ def run_secure_liveness():
         instruction = "Align your face"
 
         if data["face_detected"]:
-
+            if data["depth_spoof_flag"]:
+                instruction = "Spoof suspected (Depth anomaly)"
+                cv2.putText(frame, "Depth Check Failed", (20, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                cv2.imshow("Secure Liveness Verification", frame)
+                time.sleep(2)
+                print("Status: Rejected (Depth Spoof)")
+                break
             if data["distance_status"] != "good":
                 instruction = f"Move: {data['distance_status']}"
             elif not is_aligned(data["landmarks"]):
@@ -206,8 +270,28 @@ def run_secure_liveness():
         cv2.imshow("Secure Liveness Verification", frame)
 
         if current_step >= len(challenges):
-            print("You have done all the challenges!")
-            print("Status: Accepted")
+            if len(z_variances) > 10:
+
+                avg_z = np.mean(z_variances)
+                avg_depth = np.mean(depth_ratios)
+                avg_curvature = np.mean(curvatures)
+
+                print("\nFinal Depth Metrics:")
+                print("Avg Z variance:", avg_z)
+                print("Avg Depth ratio:", avg_depth)
+                print("Avg Curvature:", avg_curvature)
+
+                # Example thresholds (tune these)
+                if avg_z < 0.0005 or avg_depth < 0.06 or avg_curvature < 0.06:
+                    print("Final Depth Decision: REJECTED (Flat spoof suspected)")
+                    print("Status: Rejected")
+                else:
+                    print("Final Depth Decision: PASSED")
+                    print("Status: Accepted")
+
+            else:
+                print("Insufficient depth data")
+                print("Status: Rejected")
             break
 
         if time.time() - start_time > max_time:
