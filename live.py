@@ -4,6 +4,7 @@ import numpy as np
 import time
 import random
 import os
+from mini import MiniFASNetService
 
 class LivenessService:
     def __init__(self):
@@ -185,6 +186,8 @@ def is_aligned(landmarks):
 
 def run_secure_liveness():
     service = LivenessService()
+    fas_service = MiniFASNetService()
+    cnn_scores = []
     z_variances = []
     depth_ratios = []
     curvatures = []
@@ -212,6 +215,9 @@ def run_secure_liveness():
         small = cv2.resize(frame, (480, 360))
         data = service.analyze(small)
         if data["face_detected"]:
+            cnn_score = fas_service.predict(frame, data["landmarks"])
+            cnn_scores.append(cnn_score)
+            data["cnn_score"] = cnn_score
             z_variances.append(data["z_variance"])
             depth_ratios.append(data["depth_ratio"])
             curvatures.append(data["curvature_score"])
@@ -270,6 +276,14 @@ def run_secure_liveness():
         cv2.imshow("Secure Liveness Verification", frame)
 
         if current_step >= len(challenges):
+            if len(cnn_scores) > 10:
+                mean_cnn = np.mean(cnn_scores)
+                print("Mean CNN Score:", mean_cnn)
+
+                if mean_cnn < 0.65:
+                    print("Final CNN Decision: REJECTED (Spoof suspected)")
+                    print("Status: Rejected")
+                    break
             if len(z_variances) > 10:
 
                 avg_z = np.mean(z_variances)
@@ -281,7 +295,6 @@ def run_secure_liveness():
                 print("Avg Depth ratio:", avg_depth)
                 print("Avg Curvature:", avg_curvature)
 
-                # Example thresholds (tune these)
                 if avg_z < 0.0005 or avg_depth < 0.06 or avg_curvature < 0.06:
                     print("Final Depth Decision: REJECTED (Flat spoof suspected)")
                     print("Status: Rejected")
