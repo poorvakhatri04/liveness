@@ -109,19 +109,17 @@ def draw_face_guide(frame, min_ratio, max_ratio):
     max_width = int(w * max_ratio)
 
     ideal_width = (min_width + max_width) // 2
-    ideal_height = int(ideal_width * 1.4)
-
-    axes = (ideal_width // 2, ideal_height // 2)
+    radius = ideal_width
 
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
     frame = cv2.addWeighted(overlay, 0.4, frame, 0.8, 0)
 
     mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+    cv2.circle(mask, center, radius, 255, -1)
 
     frame[mask == 255] = cv2.addWeighted(frame[mask == 255], 1.5, frame[mask == 255], 0, 0)
-    cv2.ellipse(frame, center, axes, 0, 0, 360, (255, 255, 255), 2)
+    cv2.circle(frame, center, radius, (255, 255, 255), 2)
 
     return frame
 
